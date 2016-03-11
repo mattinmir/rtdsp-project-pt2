@@ -34,6 +34,7 @@
 
 // math library (trig functions)
 #include <math.h>
+#include <float.h>
 
 /* Some functions to help with Complex algebra and FFT. */
 #include "cmplx.h"      
@@ -61,7 +62,8 @@
 /* Number of frames that are compared per nmb candidate
  * (10 seconds/frame time)/number of nmb candidates
  */
-#define FRAMES_PER_CAND (int)(10/(FFTLEN/FSAMP)) / OVERSAMP) // Not sure if cast to int is correct, will lose info -> significant? 
+#define FRAMES_PER_CAND (int)((10/(FFTLEN/FSAMP)) / OVERSAMP) // Not sure if cast to int is correct, will lose info -> significant? 
+#define NMB_SIZE FFTLEN
 /******************************* Global declarations ********************************/
 
 /* Audio port configuration settings: these values set registers in the AIC23 audio 
@@ -85,7 +87,7 @@ DSK6713_AIC23_Config Config = { \
 
 // Codec handle:- a variable used to identify audio interface  
 DSK6713_AIC23_CodecHandle H_Codec;
-
+ 
 float *inbuffer, *outbuffer;   		/* Input/output circular buffers */
 float *inframe, *outframe;          /* Input and output frames */
 float *inwin, *outwin;              /* Input and output windows */
@@ -97,7 +99,8 @@ volatile int frame_ptr=0;           /* Frame pointer */ // index to quarter fram
 complex inframe_cmplx[FFTLEN];
 complex outframe_cmplx[FFTLEN];
 
-complex nmb_cands[NFREQ*4]; // Noise Minimisation Buffer Candidates 
+float nmb_cands[NMB_SIZE*OVERSAMP]; // Noise Minimisation Buffer Candidates 
+float nmb[NMB_SIZE];
 int cands_index = 0 ;
 int frames_processed = 0;
  /******************************* Function prototypes *******************************/
@@ -105,7 +108,8 @@ void init_hardware(void);    	/* Initialize codec */
 void init_HWI(void);            /* Initialize hardware interrupts */
 void ISR_AIC(void);             /* Interrupt service routine for codec */
 void process_frame(void);       /* Frame processing routine */
-           
+float min(float x, float y);
+float max(float x, float y);
 /********************************** Main routine ************************************/
 void main()
 {      
@@ -136,7 +140,12 @@ void main()
 	} 
   	ingain=INGAIN;
   	outgain=OUTGAIN;        
-
+	
+	for(k = 0; k < NMB_SIZE; k++)
+		nmb[k] = FLT_MAX;
+	for(k = 0; k < NMB_SIZE*OVERSAMP; k++)
+		nmb_cands[k] = FLT_MAX;
+	
  							
   	/* main loop, wait for interrupt */  
   	while(1) 	
@@ -184,6 +193,7 @@ void process_frame(void)
 {
 	int k, m, i; 
 	int io_ptr0;   // index of samples
+	float nmb_value, inframe_value;
 
 	/* work out fraction of available CPU time used by algorithm */    
 	// FRAMEINC-1 is 63, ANDing with io_ptr will repeat the output everytime io_ptr passes 64
@@ -211,16 +221,14 @@ void process_frame(void)
 		if (++m >= CIRCBUF) m=0; /* wrap if required */
 	} 
 	
-	/************************* DO PROCESSING OF FRAME  HERE **************************/
+/******************************** DO PROCESSING OF FRAME  HERE *******************************************************************/
 	
 	
-	/* please add your code, at the moment the code simply copies the input to the 
-	ouptut with no processing */	 
-	for(i= 0; i < FFTLEN; i++)
+	/***************** Applying fft ****************/ 
+	for(i = 0; i < FFTLEN; i++)
 		inframe_cmplx[i] = cmplx(inframe[i],0);
 		
 	fft (FFTLEN, inframe_cmplx);
-	
 	
 	// For each frame you calculate the fft of, check each frequency bin's magnitude against the 
 	// min values in the current 2.5sec candidate of min values. Swap values in if they are lower than the min.
@@ -232,24 +240,45 @@ void process_frame(void)
 	// - inframe_cmplx has 256 elements but each NMB Candidate will have 129 (NFREQ) samples. How to compare them?
 	// -> NFREQ is 129 because we disregard samples <0hz. So just use inframe_cmplx[127-255] and discard the rest
 	
-	for(i = 0; i < NFREQ; i++)
+	/************ Updating nmb candidates ***********/
+	for(i = 0; i < NMB_SIZE; i++)
 	{
 		// If cand value for that freq bin is higher than input frame value, replace the value
-		nmb_cands[cands_index] = (inframe_cmplx[NFREQ-2+i] < nmb_cands[cands_index]) ? inframe_cmplx[NFREQ-2+i] : nmb_cands[cands_index];
+		
+		// Find magnitude of frequency bin
+		inframe_value = cabs(inframe_cmplx[i]);
+		nmb_value = nmb_cands[cands_index + i];
+		
+		nmb_cands[cands_index + i] = min(inframe_value, nmb_value);
 	}
 	
 	// Count number of frames processed so far so we know when to move to the next section
 	// Wraparound when it has surpassed the size of the candidate buffer
-	++frames_processed = (frames_processed > NFREQ*4) ? frames_processed -= NFREQ*4 : frames_processed;
+	frames_processed++;
+	frames_processed -= (frames_processed >= NMB_SIZE*OVERSAMP) ? NMB_SIZE*OVERSAMP : 0; // Check for wraparound
 	
 	// If frames_processed is between 0 and FRAMES_PER_CAND, then the for loop should be comparing with the first candidate,
 	// so cands_index should start at the start of that candidate (index 0)
 	// If it is between FRAMES_PER_CAND and 2*FRAMES_PER_CAND, it should be comparing with the second candidate, 
-	// so cands_index should start at the start of that candidate (index FRAMES_PER_CAND)
+	// so cands_index should start at the start of that candidate (index NMB_SIZE)
 	// And so on until the start of the last candidate 
-	// This integer division will only return values in multuples of FRAMES_PER_CAND, ensuring it always starts at the right place
-	cands_index = (frames_processed/FRAMES_PER_CAND);
+	// This integer division will only return values in multiples of NMB_SIZE, ensuring it always starts at the right place
+	cands_index = (frames_processed / FRAMES_PER_CAND) * NMB_SIZE ;
+	cands_index -= (cands_index >= NMB_SIZE*OVERSAMP) ?  NMB_SIZE*OVERSAMP : 0;// Check for wraparound
 	
+	/********** Updating nmb from candidates ***********/
+	
+	// Find min value for each frequency bin from each candidate
+	
+	// When OVERSAMP = 4
+	for (i = 0; i < NMB_SIZE; i++)
+	{
+		nmb[i] = min(min(nmb_cands[i], nmb_cands[NMB_SIZE+i]), min(nmb_cands[2*NMB_SIZE+i], nmb_cands[3*NMB_SIZE+i]));
+	}
+	
+	/********** Applying noise subtraction ***************/
+	for (i = 0; i < FFTLEN; i++)
+		outframe_cmplx[i] = rmul(max(LAMBDA, 1-(nmb[i]/cabs(inframe_cmplx[i]) )), inframe_cmplx[i]);
 	/*
 	for (i = 0; i < FFTLEN; i++)
 		outframe_cmplx[i] = inframe_cmplx[i];
@@ -265,7 +294,7 @@ void process_frame(void)
 	// (frame_ptr*FRAMEINC - (io_ptr+FRAMEINC)) % CIRCBUF
 	/********************************************************************************/
 	
-    /* multiply outframe by output window and overlap-add into output buffer */  
+    /* multiply outframe by output window and overlap-add into output buffer */   
                            
 	m=io_ptr0;
     
@@ -280,7 +309,7 @@ void process_frame(void)
 	    m++;
 	}	                                   
 }        
-/*************************** INTERRUPT SERVICE ROUTINE  *****************************/
+/*************************** INTERRUPT SERVICE ROUTINE  ******************************************************************/
 
 // Map this to the appropriate interrupt in the CDB file
    
@@ -300,3 +329,13 @@ void ISR_AIC(void)
 }
 
 /************************************************************************************/
+
+float min(float x, float y)
+{
+	return (x <= y) ? x : y;
+}
+
+float max(float x, float y)
+{
+	return (x >= y) ? x : y;
+}
