@@ -57,12 +57,13 @@
 #define PI 3.141592653589793
 #define TFRAME FRAMEINC/FSAMP       /* time between calculation of each frame */
 
-#define LAMBDA 0.1
+
+
 
 /* Number of frames that are compared per nmb candidate
  * (10 seconds/frame time)/number of nmb candidates
  */
-#define FRAMES_PER_CAND (int)((10/(FFTLEN/FSAMP)) / OVERSAMP) // Not sure if cast to int is correct, will lose info -> significant? 
+#define QUARTER_FRAMES_PER_CAND (int)(10.0/(float)TFRAME) // Not sure if cast to int is correct, will lose info -> significant? 
 #define NMB_SIZE FFTLEN
 /******************************* Global declarations ********************************/
 
@@ -103,6 +104,9 @@ float nmb_cands[NMB_SIZE*OVERSAMP]; // Noise Minimisation Buffer Candidates
 float nmb[NMB_SIZE];
 int cands_index = 0 ;
 int frames_processed = 0;
+
+volatile float lambda = 0.1;
+volatile float alpha = 20;
  /******************************* Function prototypes *******************************/
 void init_hardware(void);    	/* Initialize codec */ 
 void init_HWI(void);            /* Initialize hardware interrupts */
@@ -191,7 +195,7 @@ void init_HWI(void)
 /******************************** process_frame() ***********************************/  
 void process_frame(void)
 {
-	int k, m, i; 
+	int k, m, i, new_cands_index; 
 	int io_ptr0;   // index of samples
 	float nmb_value, inframe_value;
 
@@ -257,14 +261,28 @@ void process_frame(void)
 	frames_processed++;
 	frames_processed -= (frames_processed >= NMB_SIZE*OVERSAMP) ? NMB_SIZE*OVERSAMP : 0; // Check for wraparound
 	
-	// If frames_processed is between 0 and FRAMES_PER_CAND, then the for loop should be comparing with the first candidate,
+	// If frames_processed is between 0 and QUARTER_FRAMES_PER_CAND, then the for loop should be comparing with the first candidate,
 	// so cands_index should start at the start of that candidate (index 0)
-	// If it is between FRAMES_PER_CAND and 2*FRAMES_PER_CAND, it should be comparing with the second candidate, 
+	// If it is between QUARTER_FRAMES_PER_CAND and 2*QUARTER_FRAMES_PER_CAND, it should be comparing with the second candidate, 
 	// so cands_index should start at the start of that candidate (index NMB_SIZE)
 	// And so on until the start of the last candidate 
 	// This integer division will only return values in multiples of NMB_SIZE, ensuring it always starts at the right place
-	cands_index = (frames_processed / FRAMES_PER_CAND) * NMB_SIZE ;
-	cands_index -= (cands_index >= NMB_SIZE*OVERSAMP) ?  NMB_SIZE*OVERSAMP : 0;// Check for wraparound
+	new_cands_index = (frames_processed / QUARTER_FRAMES_PER_CAND) * NMB_SIZE ;
+	
+	// If we have moved to the next candidate, change the index, and reset the values in the candidate
+	if(new_cands_index != cands_index)
+	{
+		cands_index = new_cands_index;
+		
+		// Check for wraparound
+		cands_index -= (cands_index >= NMB_SIZE*OVERSAMP) ?  NMB_SIZE*OVERSAMP : 0;
+		
+		//Reset values
+		for(k = cands_index; k < NMB_SIZE; k++)
+			nmb_cands[k] = FLT_MAX;
+	}
+	
+	
 	
 	/********** Updating nmb from candidates ***********/
 	
@@ -273,12 +291,12 @@ void process_frame(void)
 	// When OVERSAMP = 4
 	for (i = 0; i < NMB_SIZE; i++)
 	{
-		nmb[i] = min(min(nmb_cands[i], nmb_cands[NMB_SIZE+i]), min(nmb_cands[2*NMB_SIZE+i], nmb_cands[3*NMB_SIZE+i]));
+		nmb[i] = alpha * min(min(nmb_cands[i], nmb_cands[NMB_SIZE+i]), min(nmb_cands[2*NMB_SIZE+i], nmb_cands[3*NMB_SIZE+i]));
 	}
 	
 	/********** Applying noise subtraction ***************/
 	for (i = 0; i < FFTLEN; i++)
-		outframe_cmplx[i] = rmul(max(LAMBDA, 1-(nmb[i]/cabs(inframe_cmplx[i]) )), inframe_cmplx[i]);
+		outframe_cmplx[i] = rmul(max(lambda, 1-(nmb[i]/cabs(inframe_cmplx[i]) )), inframe_cmplx[i]);
 	/*
 	for (i = 0; i < FFTLEN; i++)
 		outframe_cmplx[i] = inframe_cmplx[i];
@@ -289,9 +307,10 @@ void process_frame(void)
 	for(i= 0; i < FFTLEN; i++)
 		outframe[i] = outframe_cmplx[i].r;
 		
+
 	
-	// Equation for mapping index of inbuffer to index of inwin
-	// (frame_ptr*FRAMEINC - (io_ptr+FRAMEINC)) % CIRCBUF
+	
+	
 	/********************************************************************************/
 	
     /* multiply outframe by output window and overlap-add into output buffer */   
