@@ -65,6 +65,7 @@
  */
 #define QUARTER_FRAMES_PER_CAND (int)(10.0/(float)TFRAME) // Not sure if cast to int is correct, will lose info -> significant? 
 #define NMB_SIZE FFTLEN
+
 /******************************* Global declarations ********************************/
 
 /* Audio port configuration settings: these values set registers in the AIC23 audio 
@@ -107,6 +108,16 @@ int frames_processed = 0;
 
 volatile float lambda = 0.1;
 volatile float alpha = 20;
+volatile float tau = 0.04;
+
+// used in opt 1
+float q;
+
+
+int noise_subtraction = 1;
+// Optimisation Switches
+volatile int opt1 = 1;
+volatile int opt2 = 1;
  /******************************* Function prototypes *******************************/
 void init_hardware(void);    	/* Initialize codec */ 
 void init_HWI(void);            /* Initialize hardware interrupts */
@@ -150,7 +161,8 @@ void main()
 	for(k = 0; k < NMB_SIZE*OVERSAMP; k++)
 		nmb_cands[k] = FLT_MAX;
 	
- 							
+ 	q = exp(-(float)TFRAME/tau);						
+ 	
   	/* main loop, wait for interrupt */  
   	while(1) 	
   		process_frame();
@@ -198,6 +210,8 @@ void process_frame(void)
 	int k, m, i, new_cands_index; 
 	int io_ptr0;   // index of samples
 	float nmb_value, inframe_value;
+	float magx, magx_lpf = 1, magx_lpf_prev = 0;
+	float input;
 
 	/* work out fraction of available CPU time used by algorithm */    
 	// FRAMEINC-1 is 63, ANDing with io_ptr will repeat the output everytime io_ptr passes 64
@@ -227,90 +241,112 @@ void process_frame(void)
 	
 /******************************** DO PROCESSING OF FRAME  HERE *******************************************************************/
 	
-	
-	/***************** Applying fft ****************/ 
-	for(i = 0; i < FFTLEN; i++)
-		inframe_cmplx[i] = cmplx(inframe[i],0);
-		
-	fft (FFTLEN, inframe_cmplx);
-	
-	// For each frame you calculate the fft of, check each frequency bin's magnitude against the 
-	// min values in the current 2.5sec candidate of min values. Swap values in if they are lower than the min.
-	// After processing 2.5sec wortth of frames (1250/4), check between all 4 candidates to find the minimum for each
-	// frequency bin. Put these values into the NMB.
-	// Now these NMB values will be used to attenuate the output each cycle using the noise subtraction algorithm.
-	
-	
-	// - inframe_cmplx has 256 elements but each NMB Candidate will have 129 (NFREQ) samples. How to compare them?
-	// -> NFREQ is 129 because we disregard samples <0hz. So just use inframe_cmplx[127-255] and discard the rest
-	
-	/************ Updating nmb candidates ***********/
-	for(i = 0; i < NMB_SIZE; i++)
+	if(noise_subtraction)
 	{
-		// If cand value for that freq bin is higher than input frame value, replace the value
+		/***************** Applying fft ****************/ 
+		for(i = 0; i < FFTLEN; i++)
+			inframe_cmplx[i] = cmplx(inframe[i],0);
+			
+		fft (FFTLEN, inframe_cmplx);
 		
-		// Find magnitude of frequency bin
-		inframe_value = cabs(inframe_cmplx[i]);
-		nmb_value = nmb_cands[cands_index + i];
+		// For each frame you calculate the fft of, check each frequency bin's magnitude against the 
+		// min values in the current 2.5sec candidate of min values. Swap values in if they are lower than the min.
+		// After processing 2.5sec wortth of frames (1250/4), check between all 4 candidates to find the minimum for each
+		// frequency bin. Put these values into the NMB.
+		// Now these NMB values will be used to attenuate the output each cycle using the noise subtraction algorithm.
 		
-		nmb_cands[cands_index + i] = min(inframe_value, nmb_value);
+		
+		// - inframe_cmplx has 256 elements but each NMB Candidate will have 129 (NFREQ) samples. How to compare them?
+		// -> NFREQ is 129 because we disregard samples <0hz. So just use inframe_cmplx[127-255] and discard the rest
+		
+		/************ Updating nmb candidates ***********/
+		for(i = 0; i < NMB_SIZE; i++)
+		{
+			// If cand value for that freq bin is higher than input frame value, replace the value
+			
+			// Find magnitude of frequency bin
+			inframe_value = cabs(inframe_cmplx[i]);
+			nmb_value = nmb_cands[cands_index + i];
+			
+			nmb_cands[cands_index + i] = min(inframe_value, nmb_value);
+		}
+		
+		// Count number of frames processed so far so we know when to move to the next section
+		// Wraparound when it has surpassed the size of the candidate buffer
+		frames_processed++;
+		frames_processed -= (frames_processed >= NMB_SIZE*OVERSAMP) ? NMB_SIZE*OVERSAMP : 0; // Check for wraparound
+		
+		// If frames_processed is between 0 and QUARTER_FRAMES_PER_CAND, then the for loop should be comparing with the first candidate,
+		// so cands_index should start at the start of that candidate (index 0)
+		// If it is between QUARTER_FRAMES_PER_CAND and 2*QUARTER_FRAMES_PER_CAND, it should be comparing with the second candidate, 
+		// so cands_index should start at the start of that candidate (index NMB_SIZE)
+		// And so on until the start of the last candidate 
+		// This integer division will only return values in multiples of NMB_SIZE, ensuring it always starts at the right place
+		new_cands_index = (frames_processed / QUARTER_FRAMES_PER_CAND) * NMB_SIZE ;
+		
+		// If we have moved to the next candidate, change the index, and reset the values in the candidate
+		if(new_cands_index != cands_index)
+		{
+			cands_index = new_cands_index;
+			
+			// Check for wraparound
+			cands_index -= (cands_index >= NMB_SIZE*OVERSAMP) ?  NMB_SIZE*OVERSAMP : 0;
+			
+			//Reset values
+			for(k = cands_index; k < NMB_SIZE; k++)
+				nmb_cands[k] = FLT_MAX;
+		}
+		
+		
+		
+		/********** Updating nmb from candidates ***********/
+		
+		// Find min value for each frequency bin from each candidate
+		
+		// When OVERSAMP = 4
+		for (i = 0; i < NMB_SIZE; i++)
+		{
+			nmb[i] = alpha * min(min(nmb_cands[i], nmb_cands[NMB_SIZE+i]), min(nmb_cands[2*NMB_SIZE+i], nmb_cands[3*NMB_SIZE+i]));
+		}
+		
+		/********** Applying noise subtraction ***************/
+		for (i = 0; i < FFTLEN; i++)
+		{
+			if(opt1)
+			{
+				if(opt2)
+					magx = pow(cabs(inframe_cmplx[i]),2);
+				else
+					magx = cabs(inframe_cmplx[i]);
+					
+				magx_lpf = (1-q)*magx + q*magx_lpf_prev;	
+				magx_lpf_prev = magx_lpf;
+				
+				if (opt2)
+					input = sqrt(magx_lpf);
+			}
+			else 
+				input = cabs(inframe_cmplx[i]);	
+					
+			outframe_cmplx[i] = rmul(max(lambda, 1-(nmb[i]/input)), inframe_cmplx[i]);
+		}
+		/*
+		for (i = 0; i < FFTLEN; i++)
+			outframe_cmplx[i] = inframe_cmplx[i];
+		*/
+		
+		ifft(FFTLEN, outframe_cmplx);
+		
+		for(i= 0; i < FFTLEN; i++)
+			outframe[i] = outframe_cmplx[i].r;
 	}
-	
-	// Count number of frames processed so far so we know when to move to the next section
-	// Wraparound when it has surpassed the size of the candidate buffer
-	frames_processed++;
-	frames_processed -= (frames_processed >= NMB_SIZE*OVERSAMP) ? NMB_SIZE*OVERSAMP : 0; // Check for wraparound
-	
-	// If frames_processed is between 0 and QUARTER_FRAMES_PER_CAND, then the for loop should be comparing with the first candidate,
-	// so cands_index should start at the start of that candidate (index 0)
-	// If it is between QUARTER_FRAMES_PER_CAND and 2*QUARTER_FRAMES_PER_CAND, it should be comparing with the second candidate, 
-	// so cands_index should start at the start of that candidate (index NMB_SIZE)
-	// And so on until the start of the last candidate 
-	// This integer division will only return values in multiples of NMB_SIZE, ensuring it always starts at the right place
-	new_cands_index = (frames_processed / QUARTER_FRAMES_PER_CAND) * NMB_SIZE ;
-	
-	// If we have moved to the next candidate, change the index, and reset the values in the candidate
-	if(new_cands_index != cands_index)
+	else
 	{
-		cands_index = new_cands_index;
-		
-		// Check for wraparound
-		cands_index -= (cands_index >= NMB_SIZE*OVERSAMP) ?  NMB_SIZE*OVERSAMP : 0;
-		
-		//Reset values
-		for(k = cands_index; k < NMB_SIZE; k++)
-			nmb_cands[k] = FLT_MAX;
+		for (k=0;k<FFTLEN;k++)
+		{                           
+			outframe[k] = inframe[k];/* copy input straight into output */ 
+		} 
 	}
-	
-	
-	
-	/********** Updating nmb from candidates ***********/
-	
-	// Find min value for each frequency bin from each candidate
-	
-	// When OVERSAMP = 4
-	for (i = 0; i < NMB_SIZE; i++)
-	{
-		nmb[i] = alpha * min(min(nmb_cands[i], nmb_cands[NMB_SIZE+i]), min(nmb_cands[2*NMB_SIZE+i], nmb_cands[3*NMB_SIZE+i]));
-	}
-	
-	/********** Applying noise subtraction ***************/
-	for (i = 0; i < FFTLEN; i++)
-		outframe_cmplx[i] = rmul(max(lambda, 1-(nmb[i]/cabs(inframe_cmplx[i]) )), inframe_cmplx[i]);
-	/*
-	for (i = 0; i < FFTLEN; i++)
-		outframe_cmplx[i] = inframe_cmplx[i];
-	*/
-	
-	ifft(FFTLEN, outframe_cmplx);
-	
-	for(i= 0; i < FFTLEN; i++)
-		outframe[i] = outframe_cmplx[i].r;
-		
-
-	
-	
-	
 	/********************************************************************************/
 	
     /* multiply outframe by output window and overlap-add into output buffer */   
