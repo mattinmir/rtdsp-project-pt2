@@ -119,8 +119,14 @@ float q;
 
 int noise_subtraction = 1;
 // Optimisation Switches
-volatile int opt1 = 1;
-volatile int opt2 = 1;
+int opt1 = 1;
+int opt2 = 0;
+int opt3 = 1;
+int opt4 = 1;
+
+float input;
+float magx;
+float magx_prev[NMB_SIZE];
  /******************************* Function prototypes *******************************/
 void init_hardware(void);    	/* Initialize codec */ 
 void init_HWI(void);            /* Initialize hardware interrupts */
@@ -212,8 +218,8 @@ void process_frame(void)
 	int k, m, i, new_cands_index; 
 	int io_ptr0;   // index of samples
 	float nmb_value, inframe_value;
-	float magx, magx_lpf = 1, magx_lpf_prev = 0;
-	float input;
+	
+
 	float* temp;
 
 	/* work out fraction of available CPU time used by algorithm */    
@@ -270,9 +276,28 @@ void process_frame(void)
 		
 			
 		/************ Updating nmb candidates ***********/
-		for(i = 0; i < NMB_SIZE; i++)			
-			m1[i] = min(cabs(inframe_cmplx[i]), m1[i]);
-		
+		for(i = 0; i < NMB_SIZE; i++)	
+		{	
+			if(opt1)
+			{
+				magx = cabs(inframe_cmplx[i]);
+				/*
+				if(opt2)
+					magx = pow(magx, 2);
+					*/
+				input = (1-q)*magx + q*magx_prev[i];
+				/*
+				if(opt2)
+				{
+					magx = sqrt(magx);
+					input = sqrt(input);
+				}*/	
+				magx_prev[i] = magx;
+			}
+			else
+				input = cabs(inframe_cmplx[i]);
+			m1[i] = min(input, m1[i]);
+		}
 		frames_processed++;
 	
 		/********** Updating nmb from candidates ***********/
@@ -288,8 +313,7 @@ void process_frame(void)
 		/********** Applying noise subtraction ***************/
 		for (i = 0; i < FFTLEN; i++)
 		{
-			input = cabs(inframe_cmplx[i]);			
-			outframe_cmplx[i] = rmul(max(lambda, 1-(nmb[i]/input)), inframe_cmplx[i]);
+			outframe_cmplx[i] = rmul(max(lambda, 1-(nmb[i]/cabs(inframe_cmplx[i]))), inframe_cmplx[i]);
 		}
 		
 		ifft(FFTLEN, outframe_cmplx);
