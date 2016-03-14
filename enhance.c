@@ -107,10 +107,10 @@ float *m3;
 float *m4;
 float nmb[NMB_SIZE];
 int cands_index = 0 ;
-int frames_processed = 0;
+int quarter_frames_processed = 0;
 
 volatile float lambda = 0.1;
-volatile float alpha = 20;
+volatile float alpha = 2;
 volatile float tau = 0.04;
 
 // used in opt 1
@@ -126,7 +126,7 @@ int opt4 = 1;
 
 float input;
 float magx;
-float magx_prev[NMB_SIZE];
+float input_prev[NMB_SIZE];
  /******************************* Function prototypes *******************************/
 void init_hardware(void);    	/* Initialize codec */ 
 void init_HWI(void);            /* Initialize hardware interrupts */
@@ -253,9 +253,13 @@ void process_frame(void)
 	if(noise_subtraction)
 	{
 		
-		if(frames_processed == QUARTER_FRAMES_PER_CAND) 
+		if(quarter_frames_processed == QUARTER_FRAMES_PER_CAND) 
 		{		
-			frames_processed = 0;
+			quarter_frames_processed = 0;
+
+			
+			
+			/************ shuffle buffers around  ***************/
 			// m1 newest, m2 oldest
 			temp = m1;
 			m1 = m2;
@@ -265,6 +269,8 @@ void process_frame(void)
 			
 			for(k = 0; k < NMB_SIZE; k++)
 				m1[k] = FLT_MAX;
+
+
 		}
 		
 		/***************** Applying fft ****************/ 
@@ -281,34 +287,34 @@ void process_frame(void)
 			if(opt1)
 			{
 				magx = cabs(inframe_cmplx[i]);
-				/*
+				
 				if(opt2)
-					magx = pow(magx, 2);
-					*/
-				input = (1-q)*magx + q*magx_prev[i];
-				/*
-				if(opt2)
-				{
-					magx = sqrt(magx);
+					magx *= magx;
+					
+				input = (1-q)*magx + q*input_prev[i];
+				
+				if(opt2)					
 					input = sqrt(input);
-				}*/	
-				magx_prev[i] = magx;
+				
+				input_prev[i] = input;
 			}
 			else
 				input = cabs(inframe_cmplx[i]);
+				
 			m1[i] = min(input, m1[i]);
 		}
-		frames_processed++;
-	
+		
 		/********** Updating nmb from candidates ***********/
 		
-		// Find min value for each frequency bin from each candidate
+			// Find min value for each frequency bin from each candidate
+			
+			// When OVERSAMP = 4
+			for (i = 0; i < NMB_SIZE; i++)
+			{
+				nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
+			}
 		
-		// When OVERSAMP = 4
-		for (i = 0; i < NMB_SIZE; i++)
-		{
-			nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
-		}
+		quarter_frames_processed++;		
 		
 		/********** Applying noise subtraction ***************/
 		for (i = 0; i < FFTLEN; i++)
