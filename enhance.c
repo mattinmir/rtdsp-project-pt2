@@ -131,6 +131,7 @@ int opt4 = 0; 	/*
 				*/
 int opt5 = 0;
 int opt6 = 0;
+int opt7 = 0;
 
 float magx;
 float P[NMB_SIZE];
@@ -142,6 +143,7 @@ float g;
 float magxsq;
 float nmbisq;
 float Pisq;
+float alpha_coef = 1;
 
 
  /******************************* Function prototypes *******************************/
@@ -276,7 +278,7 @@ void process_frame(void)
 
 			
 			
-			/************ shuffle buffers around  ***************/
+			/************ Rotate buffer pointers around  ***************/
 			// m1 newest, m2 oldest
 			temp = m1;
 			m1 = m2;
@@ -313,12 +315,14 @@ void process_frame(void)
 				// Perform low pass filter	
 				P[i] = lpf(magx, P_prev, i);
 				
+					// Store value for next lpf equation
+				P_prev[i] = P[i];
+				
 				// sqrt to bring back to time domain
 				if(opt2)					
 					P[i] = sqrt(P[i]);
 				
-				// Store value for next lpf equation
-				P_prev[i] = P[i];
+			
 			}
 			else
 				P[i] = magx;
@@ -337,8 +341,11 @@ void process_frame(void)
 			
 			// Scale alpha inversely proportional to SNR
 			if (opt6)
-				nmb[i] *= -log(nmb[i]/cabs(inframe_cmplx[i]));
-				
+			{
+				// Don't want to amplify more than 20
+				alpha_coef = min(20, -log(1-(nmb[i]/cabs(inframe_cmplx[i]))) + 1); // +1 to make 1SNR stay same (could make it decrease alpha if high snr?)
+				nmb[i] *= alpha_coef;
+			}	
 				
 			// Calculate in power domain
 			if(opt3)
@@ -415,7 +422,7 @@ void process_frame(void)
 			outframe[k] = inframe[k];/* copy input straight into output */ 
 		} 
 	}
-	/********************************************************************************/
+	/******************************************************************************************************************************/
 	
     /* multiply outframe by output window and overlap-add into output buffer */   
                            
