@@ -119,14 +119,23 @@ float q;
 
 int noise_subtraction = 1;
 // Optimisation Switches
-int opt1 = 1;
-int opt2 = 0;
-int opt3 = 1;
-int opt4 = 1;
+int opt1 = 1; // LPF of X when calculating noise estimate
+int opt2 = 0; // Modify opt1 do do calculation in power domain
+int opt3 = 1; // LPF when calculating nmb value
+int opt4 = 0; 	/*
+					case 0:
+					case 1:
+					case 2: Requires 
+					case 3:
+					case 4: 
+				*/
 
-float input;
+
 float magx;
-float input_prev[NMB_SIZE];
+float P[NMB_SIZE];
+float P_prev[NMB_SIZE];
+float nmb_prev[NMB_SIZE];
+float g;
  /******************************* Function prototypes *******************************/
 void init_hardware(void);    	/* Initialize codec */ 
 void init_HWI(void);            /* Initialize hardware interrupts */
@@ -134,6 +143,7 @@ void ISR_AIC(void);             /* Interrupt service routine for codec */
 void process_frame(void);       /* Frame processing routine */
 float min(float x, float y);
 float max(float x, float y);
+float lpf(float x, float lpf_prev[], int i);
 /********************************** Main routine ************************************/
 void main()
 {      
@@ -166,11 +176,10 @@ void main()
   	outgain=OUTGAIN;        
 	
 	for(k = 0; k < NMB_SIZE; k++)
-		nmb[k] = m1[k] = m2[k] = m3[k] = m4[k] = FLT_MAX;
-
-	
- 	q = exp(-(float)TFRAME/tau);						
- 	
+	{
+		 nmb[k] = m1[k] = m2[k] = m3[k] = m4[k] = FLT_MAX;
+		 nmb_prev[k] = P_prev[k] = 0;					
+	}
   	/* main loop, wait for interrupt */  
   	while(1) 	
   		process_frame();
@@ -226,7 +235,7 @@ void process_frame(void)
 	// FRAMEINC-1 is 63, ANDing with io_ptr will repeat the output everytime io_ptr passes 64
 	// essenstially doing io_ptr % FRAMEINC
 	cpufrac = ((float) (io_ptr & (FRAMEINC - 1)))/FRAMEINC;  
-		
+	q = exp(-(float)TFRAME/tau);	
 	/* wait until io_ptr is at the start of the current frame */ 	
 	while((io_ptr/FRAMEINC) != frame_ptr); 
 	
@@ -286,43 +295,73 @@ void process_frame(void)
 		{	
 			if(opt1)
 			{
+				// Calculate magnitude of input
 				magx = cabs(inframe_cmplx[i]);
 				
+				// Square magx to put in power domain
 				if(opt2)
 					magx *= magx;
 					
-				input = (1-q)*magx + q*input_prev[i];
+				P[i] = lpf(magx, P_prev, i);
 				
 				if(opt2)					
-					input = sqrt(input);
+					P[i] = sqrt(P[i]);
 				
-				input_prev[i] = input;
+				P_prev[i] = P[i];
 			}
 			else
-				input = cabs(inframe_cmplx[i]);
+				P[i] = cabs(inframe_cmplx[i]);
 				
-			m1[i] = min(input, m1[i]);
+			m1[i] = min(P[i], m1[i]);
 		}
 		
 		/********** Updating nmb from candidates ***********/
 		
-			// Find min value for each frequency bin from each candidate
+		// Find min value for each frequency bin from each candidate
+		
+		// When OVERSAMP = 4
+		for (i = 0; i < NMB_SIZE; i++)
+		{
+			nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
 			
-			// When OVERSAMP = 4
-			for (i = 0; i < NMB_SIZE; i++)
+			
+			if(opt3)
 			{
-				nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
+				nmb[i] = lpf(nmb[i], nmb_prev, i);
+				nmb_prev[i] = nmb[i];
 			}
+	
+		}
 		
 		quarter_frames_processed++;		
 		
 		/********** Applying noise subtraction ***************/
 		for (i = 0; i < FFTLEN; i++)
 		{
-			outframe_cmplx[i] = rmul(max(lambda, 1-(nmb[i]/cabs(inframe_cmplx[i]))), inframe_cmplx[i]);
+			switch(opt4)
+			{
+				case 0:
+					g = max(lambda, 1-(nmb[i]/cabs(inframe_cmplx[i])));
+					break;
+				case 1: 
+					g = max(lambda*nmb[i]/cabs(inframe_cmplx[i]), 1-(nmb[i]/cabs(inframe_cmplx[i])));
+					break;
+				case 2:
+					g = max(lambda*P[i]/cabs(inframe_cmplx[i]), 1-(nmb[i]/cabs(inframe_cmplx[i])));
+					break;
+				case 3: 
+					g = max(lambda*nmb[i]/P[i], 1-(nmb[i]/P[i]));
+					break;
+				case 4:
+					g = max(lambda, 1-(nmb[i]/P[i]));
+					break;
+			}
+			
+			outframe_cmplx[i] = rmul(g, inframe_cmplx[i]);
 		}
 		
 		ifft(FFTLEN, outframe_cmplx);
+		
 		
 		for(i= 0; i < FFTLEN; i++)
 			outframe[i] = outframe_cmplx[i].r;
@@ -380,4 +419,9 @@ float min(float x, float y)
 float max(float x, float y)
 {
 	return (x >= y) ? x : y;
+}
+
+float lpf(float x, float lpf_prev[], int i)
+{
+	return (1-q)*x + q*lpf_prev[i];
 }
