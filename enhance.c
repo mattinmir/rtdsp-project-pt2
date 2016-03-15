@@ -113,7 +113,7 @@ volatile float lambda = 0.1;
 volatile float alpha = 2;
 volatile float tau = 0.04;
 
-// used in opt 1
+// used for lpf
 float q;
 
 
@@ -121,7 +121,7 @@ int noise_subtraction = 1;
 // Optimisation Switches
 int opt1 = 1; // LPF of X when calculating noise estimate
 int opt2 = 0; // Modify opt1 do do calculation in power domain
-int opt3 = 1; // LPF when calculating nmb value
+int opt3 = 0; // LPF when calculating nmb value
 int opt4 = 0; 	/*
 					case 0:
 					case 1:
@@ -130,15 +130,20 @@ int opt4 = 0; 	/*
 					case 4: Requires opt1
 				*/
 int opt5 = 0;
+int opt6 = 0;
 
 float magx;
 float P[NMB_SIZE];
 float P_prev[NMB_SIZE];
 float nmb_prev[NMB_SIZE];
 float g;
+
+// For opt5
 float magxsq;
 float nmbisq;
 float Pisq;
+
+
  /******************************* Function prototypes *******************************/
 void init_hardware(void);    	/* Initialize codec */ 
 void init_HWI(void);            /* Initialize hardware interrupts */
@@ -327,9 +332,14 @@ void process_frame(void)
 		
 		// When OVERSAMP = 4
 		for (i = 0; i < NMB_SIZE; i++)
-		{
+		{				
 			nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
 			
+			// Scale alpha inversely proportional to SNR
+			if (opt6)
+				nmb[i] *= -log(nmb[i]/cabs(inframe_cmplx[i]));
+				
+				
 			// Calculate in power domain
 			if(opt3)
 			{
@@ -349,33 +359,39 @@ void process_frame(void)
 			nmbisq = nmb[i]*nmb[i];
 			Pisq = P[i]*P[i];
 			
+			// Different values for g
 			switch(opt4)
 			{
 				case 0:
+					// Calculate g in power domain
 					if (opt5)
 						g = max(lambda, sqrt(1-(nmbisq/magxsq)));
 					else
 						g = max(lambda, 1-(nmb[i]/magx));
 					break;
 				case 1:
+					// Calculate g in power domain
 					if(opt5)
 						g = max(lambda*sqrt(nmbisq/magxsq), sqrt(1-(nmbisq/magxsq)));
 					else 
 						g = max(lambda*nmb[i]/magx, 1-(nmb[i]/magx));
 					break;
 				case 2:
+					// Calculate g in power domain
 					if(opt5)
 						g = max(lambda*sqrt(Pisq/magxsq), sqrt(1-(nmbisq/magxsq)));
 					else
 						g = max(lambda*P[i]/magx, 1-(nmb[i]/magx));
 					break;
 				case 3: 
+					// Calculate g in power domain
 					if(opt5)
 						g = max(lambda*sqrt(nmbisq/Pisq), sqrt(1-(nmbisq/Pisq)));
 					else	
 						g = max(lambda*nmb[i]/P[i], 1-(nmb[i]/P[i]));
 					break;
 				case 4:
+					// Calculate g in power domain
 					if(opt5)
 						g = max(lambda, sqrt(1-(nmbisq/Pisq)));
 					else	
