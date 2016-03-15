@@ -125,17 +125,20 @@ int opt3 = 1; // LPF when calculating nmb value
 int opt4 = 0; 	/*
 					case 0:
 					case 1:
-					case 2: Requires 
-					case 3:
-					case 4: 
+					case 2: Requires opt1
+					case 3: Requires opt1
+					case 4: Requires opt1
 				*/
-
+int opt5 = 0;
 
 float magx;
 float P[NMB_SIZE];
 float P_prev[NMB_SIZE];
 float nmb_prev[NMB_SIZE];
 float g;
+float magxsq;
+float nmbisq;
+float Pisq;
  /******************************* Function prototypes *******************************/
 void init_hardware(void);    	/* Initialize codec */ 
 void init_HWI(void);            /* Initialize hardware interrupts */
@@ -293,24 +296,27 @@ void process_frame(void)
 		/************ Updating nmb candidates ***********/
 		for(i = 0; i < NMB_SIZE; i++)	
 		{	
+			// Calculate magnitude of input
+			magx = cabs(inframe_cmplx[i]);
+				
 			if(opt1)
 			{
-				// Calculate magnitude of input
-				magx = cabs(inframe_cmplx[i]);
-				
 				// Square magx to put in power domain
 				if(opt2)
 					magx *= magx;
-					
+				
+				// Perform low pass filter	
 				P[i] = lpf(magx, P_prev, i);
 				
+				// sqrt to bring back to time domain
 				if(opt2)					
 					P[i] = sqrt(P[i]);
 				
+				// Store value for next lpf equation
 				P_prev[i] = P[i];
 			}
 			else
-				P[i] = cabs(inframe_cmplx[i]);
+				P[i] = magx;
 				
 			m1[i] = min(P[i], m1[i]);
 		}
@@ -324,7 +330,7 @@ void process_frame(void)
 		{
 			nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
 			
-			
+			// Calculate in power domain
 			if(opt3)
 			{
 				nmb[i] = lpf(nmb[i], nmb_prev, i);
@@ -338,22 +344,42 @@ void process_frame(void)
 		/********** Applying noise subtraction ***************/
 		for (i = 0; i < FFTLEN; i++)
 		{
+			magx = cabs(inframe_cmplx[i]);
+			magxsq = magx*magx;
+			nmbisq = nmb[i]*nmb[i];
+			Pisq = P[i]*P[i];
+			
 			switch(opt4)
 			{
 				case 0:
-					g = max(lambda, 1-(nmb[i]/cabs(inframe_cmplx[i])));
+					if (opt5)
+						g = max(lambda, sqrt(1-(nmbisq/magxsq)));
+					else
+						g = max(lambda, 1-(nmb[i]/magx));
 					break;
-				case 1: 
-					g = max(lambda*nmb[i]/cabs(inframe_cmplx[i]), 1-(nmb[i]/cabs(inframe_cmplx[i])));
+				case 1:
+					if(opt5)
+						g = max(lambda*sqrt(nmbisq/magxsq), sqrt(1-(nmbisq/magxsq)));
+					else 
+						g = max(lambda*nmb[i]/magx, 1-(nmb[i]/magx));
 					break;
 				case 2:
-					g = max(lambda*P[i]/cabs(inframe_cmplx[i]), 1-(nmb[i]/cabs(inframe_cmplx[i])));
+					if(opt5)
+						g = max(lambda*sqrt(Pisq/magxsq), sqrt(1-(nmbisq/magxsq)));
+					else
+						g = max(lambda*P[i]/magx, 1-(nmb[i]/magx));
 					break;
 				case 3: 
-					g = max(lambda*nmb[i]/P[i], 1-(nmb[i]/P[i]));
+					if(opt5)
+						g = max(lambda*sqrt(nmbisq/Pisq), sqrt(1-(nmbisq/Pisq)));
+					else	
+						g = max(lambda*nmb[i]/P[i], 1-(nmb[i]/P[i]));
 					break;
 				case 4:
-					g = max(lambda, 1-(nmb[i]/P[i]));
+					if(opt5)
+						g = max(lambda, sqrt(1-(nmbisq/Pisq)));
+					else	
+						g = max(lambda, 1-(nmb[i]/P[i]));
 					break;
 			}
 			
