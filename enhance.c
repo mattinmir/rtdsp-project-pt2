@@ -133,6 +133,8 @@ int opt5 = 0;
 int opt6 = 0;
 int opt7 = 0;
 
+int opta = 1;
+
 float magx;
 float P[NMB_SIZE];
 float P_prev[NMB_SIZE];
@@ -339,21 +341,32 @@ void process_frame(void)
 		{				
 			nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
 			
-			// Scale alpha inversely proportional to SNR
-			if (opt6)
+			if(opta)
 			{
+				if(i >= 5 && i <= 57) // Bwetween 300 and 3500Hz
+					nmb[i] /= 10000;
+				else
+					nmb[i] = FLT_MAX;
+			}
+			
+			// Scale alpha inversely proportional to SNR
+			if (opt6 && i < 20)
+			{
+				nmbisq = nmb[i]*nmb[i];
+				magxsq = cabs(inframe_cmplx[i]) * cabs(inframe_cmplx[i]);
 				// Don't want to amplify more than 20
-				alpha_coef = min(20, -log(1-(nmb[i]/cabs(inframe_cmplx[i]))) + 1); // +1 to make 1SNR stay same (could make it decrease alpha if high snr?)
+				alpha_coef = min(2000, -log((1-(nmbisq/magxsq))/(nmbisq/magxsq))); // +1 to make 1SNR stay same (could make it decrease alpha if high snr?)
 				nmb[i] *= alpha_coef;
 			}	
 				
-			// Calculate in power domain
+		
 			if(opt3)
 			{
 				nmb[i] = lpf(nmb[i], nmb_prev, i);
 				nmb_prev[i] = nmb[i];
 			}
-	
+			
+			
 		}
 		
 		quarter_frames_processed++;		
