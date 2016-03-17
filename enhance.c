@@ -105,13 +105,13 @@ float *m1;
 float *m2;
 float *m3;
 float *m4;
-float nmb[NMB_SIZE];
+float *nmb;
 int cands_index = 0 ;
 int quarter_frames_processed = 0;
 
-volatile float lambda = 0.1;
-volatile float alpha = 2;
-volatile float tau = 0.04;
+volatile float lambda = 0.06;
+volatile float alpha = 2.5;
+volatile float tau = 0.06;
 
 // used for lpf
 float q;
@@ -120,9 +120,9 @@ float q;
 int noise_subtraction = 1;
 // Optimisation Switches
 int opt1 = 1; // LPF of X when calculating noise estimate
-int opt2 = 0; // Modify opt1 do do calculation in power domain
-int opt3 = 0; // LPF when calculating nmb value
-int opt4 = 0; 	/*
+int opt2 = 1; // Modify opt1 do do calculation in power domain
+int opt3 = 1; // LPF when calculating nmb value
+int opt4 = 4; 	/*
 					case 0:
 					case 1:
 					case 2: Requires opt1
@@ -130,11 +130,13 @@ int opt4 = 0; 	/*
 					case 4: Requires opt1
 				*/
 int opt5 = 0;
-int opt6 = 0;
+int opt6 = 1;
 int opt7 = 0;
 
-int opta = 1;
+int opta = 0;
 
+
+int i;
 float magx;
 float P[NMB_SIZE];
 float P_prev[NMB_SIZE];
@@ -166,10 +168,15 @@ void main()
 
 	inbuffer	= (float *) calloc(CIRCBUF, sizeof(float));	/* Input array */
     outbuffer	= (float *) calloc(CIRCBUF, sizeof(float));	/* Output array */
-	inframe		= (float *) calloc(FFTLEN, sizeof(float));	/* Array for processing*/
+	inframe		= (float *) calloc(FFTLEN, sizeof(float));	/* Array for processing*/.
     outframe	= (float *) calloc(FFTLEN, sizeof(float));	/* Array for processing*/
     inwin		= (float *) calloc(FFTLEN, sizeof(float));	/* Input window */
     outwin		= (float *) calloc(FFTLEN, sizeof(float));	/* Output window */
+    m1			= (float *) calloc(NMB_SIZE, sizeof(float));
+	m2			= (float *) calloc(NMB_SIZE, sizeof(float));
+	m3			= (float *) calloc(NMB_SIZE, sizeof(float));
+	m4			= (float *) calloc(NMB_SIZE, sizeof(float));
+	nmb 		= (float *) calloc(NMB_SIZE, sizeof(float));
 	
 	/* initialize board and the audio port */
   	init_hardware();
@@ -236,7 +243,7 @@ void init_HWI(void)
 /******************************** process_frame() ***********************************/  
 void process_frame(void)
 {
-	int k, m, i, new_cands_index; 
+	int k, m, new_cands_index; 
 	int io_ptr0;   // index of samples
 	float nmb_value, inframe_value;
 	
@@ -278,7 +285,42 @@ void process_frame(void)
 		{		
 			quarter_frames_processed = 0;
 
+			/********** Updating nmb from candidates ***********/
 			
+			// Find min value for each frequency bin from each candidate
+			
+			// When OVERSAMP = 4
+			for (i = 0; i < NMB_SIZE; i++)
+			{				
+				nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
+				
+				if(opta)
+				{
+					if(i >= 5 && i <= 57) // Bwetween 300 and 3500Hz
+						nmb[i] /= 10000;
+					else
+						nmb[i] = FLT_MAX;
+				}
+				
+				// Scale alpha inversely proportional to SNR
+				if (opt6 && i < 20)
+				{
+					nmbisq = min(FLT_MAX, nmb[i]*nmb[i]); // Prevent overflow
+					magxsq = min(FLT_MAX, cabs(inframe_cmplx[i]) * cabs(inframe_cmplx[i]));
+					// Don't want to amplify more than 20
+					alpha_coef = min(200, -log((1-(nmbisq/magxsq))/(nmbisq/magxsq))); // +1 to make 1SNR stay same (could make it decrease alpha if high snr?)
+					nmb[i] = min(FLT_MAX, nmb[i]*alpha_coef);
+				}	
+					
+			
+				if(opt3)
+				{
+					nmb[i] = lpf(nmb[i], nmb_prev, i);
+					nmb_prev[i] = nmb[i];
+				}
+				
+				
+			}
 			
 			/************ Rotate buffer pointers around  ***************/
 			// m1 newest, m2 oldest
@@ -315,7 +357,7 @@ void process_frame(void)
 					magx *= magx;
 				
 				// Perform low pass filter	
-				P[i] = lpf(magx, P_prev, i);
+				P[i] =(1-q)*magx + q*P_prev[i];// lpf(magx, P_prev, i);
 				
 					// Store value for next lpf equation
 				P_prev[i] = P[i];
@@ -352,11 +394,11 @@ void process_frame(void)
 			// Scale alpha inversely proportional to SNR
 			if (opt6 && i < 20)
 			{
-				nmbisq = nmb[i]*nmb[i];
-				magxsq = cabs(inframe_cmplx[i]) * cabs(inframe_cmplx[i]);
+				nmbisq = min(FLT_MAX, nmb[i]*nmb[i]); // Prevent overflow
+				magxsq = min(FLT_MAX, cabs(inframe_cmplx[i]) * cabs(inframe_cmplx[i]));
 				// Don't want to amplify more than 20
-				alpha_coef = min(2000, -log((1-(nmbisq/magxsq))/(nmbisq/magxsq))); // +1 to make 1SNR stay same (could make it decrease alpha if high snr?)
-				nmb[i] *= alpha_coef;
+				alpha_coef = min(200, -log(1-(nmbisq/magxsq))/(nmbisq/magxsq)); // +1 to make 1SNR stay same (could make it decrease alpha if high snr?)
+				nmb[i] = min(FLT_MAX, nmb[i]*alpha_coef);
 			}	
 				
 		
