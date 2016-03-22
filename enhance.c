@@ -66,6 +66,7 @@
 #define QUARTER_FRAMES_PER_CAND 312//(int)(10.0/(float)TFRAME) // Not sure if cast to int is correct, will lose info -> significant? 
 #define NMB_SIZE FFTLEN
 
+
 /******************************* Global declarations ********************************/
 
 /* Audio port configuration settings: these values set registers in the AIC23 audio 
@@ -119,21 +120,20 @@ float q;
 
 int noise_subtraction = 1;
 // Optimisation Switches
-int opt1 = 1; // LPF of X when calculating noise estimate
-int opt2 = 1; // Modify opt1 do do calculation in power domain
-int opt3 = 1; // LPF when calculating nmb value
-int opt4 = 4; 	/*
+unsigned int opt1 = 1; // LPF of X when calculating noise estimate
+unsigned int opt2 = 1; // Modify opt1 do do calculation in power domain
+unsigned int opt3 = 1; // LPF when calculating nmb value
+unsigned int opt4 = 4; 	/*
 					case 0:
 					case 1:
 					case 2: Requires opt1
 					case 3: Requires opt1
 					case 4: Requires opt1
 				*/
-int opt5 = 0;
-int opt6 = 1;
-int opt7 = 0;
-
-int opta = 0;
+unsigned int opt5 = 0;
+unsigned int opt6 = 1;
+unsigned int opt7 = 0;
+unsigned int opt8 = 0;
 
 
 int i;
@@ -149,7 +149,12 @@ float nmbisq;
 float Pisq;
 float alpha_coef = 1;
 
-
+// For opt 8
+complex outframe_hist[3][FFTLEN] = {0};
+int hist_index = 0;
+int next, prev, curr;
+float thresh = 0.5;
+unsigned int musical_noise[FFTLEN] = {0};
  /******************************* Function prototypes *******************************/
 void init_hardware(void);    	/* Initialize codec */ 
 void init_HWI(void);            /* Initialize hardware interrupts */
@@ -158,6 +163,7 @@ void process_frame(void);       /* Frame processing routine */
 float min(float x, float y);
 float max(float x, float y);
 float lpf(float x, float lpf_prev[], int i);
+complex cmin(complex x, complex y);
 /********************************** Main routine ************************************/
 void main()
 {      
@@ -168,7 +174,7 @@ void main()
 
 	inbuffer	= (float *) calloc(CIRCBUF, sizeof(float));	/* Input array */
     outbuffer	= (float *) calloc(CIRCBUF, sizeof(float));	/* Output array */
-	inframe		= (float *) calloc(FFTLEN, sizeof(float));	/* Array for processing*/.
+	inframe		= (float *) calloc(FFTLEN, sizeof(float));	/* Array for processing*/
     outframe	= (float *) calloc(FFTLEN, sizeof(float));	/* Array for processing*/
     inwin		= (float *) calloc(FFTLEN, sizeof(float));	/* Input window */
     outwin		= (float *) calloc(FFTLEN, sizeof(float));	/* Output window */
@@ -294,16 +300,9 @@ void process_frame(void)
 			{				
 				nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
 				
-				if(opta)
-				{
-					if(i >= 5 && i <= 57) // Bwetween 300 and 3500Hz
-						nmb[i] /= 10000;
-					else
-						nmb[i] = FLT_MAX;
-				}
 				
 				// Scale alpha inversely proportional to SNR
-				if (opt6 && i < 20)
+				if (opt6 && i < 10)
 				{
 					nmbisq = min(FLT_MAX, nmb[i]*nmb[i]); // Prevent overflow
 					magxsq = min(FLT_MAX, cabs(inframe_cmplx[i]) * cabs(inframe_cmplx[i]));
@@ -383,7 +382,7 @@ void process_frame(void)
 		{				
 			nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
 			
-			if(opta)
+			if(0)
 			{
 				if(i >= 5 && i <= 57) // Bwetween 300 and 3500Hz
 					nmb[i] /= 10000;
@@ -461,14 +460,53 @@ void process_frame(void)
 					break;
 			}
 			
+			/*
+			// Processing the last cycle's frame so we can use this cycle's frame as last frame's future
+			if(opt8)
+			{
+				outframe_hist[hist_index][i] = rmul(g, inframe_cmplx[i]);
+				
+				
+				// If flag was set in previous cycle apply optimisation, else don't					
+				outframe_cmplx[i] = (musical_noise[i]) ? \
+					cmin(outframe_hist[curr][i], cmin(outframe_hist[prev][i],outframe_hist[next][i])) : outframe_hist[curr][i];
+				
+				
+				
+				// Sets flag for next cycle
+				musical_noise[i] = (nmb[i]/cabs(inframe_cmplx[i]) > thresh);
+			}
+			else*/
 			outframe_cmplx[i] = rmul(g, inframe_cmplx[i]);
+			if(opt8)
+			{
+				next = i;
+				curr = (i == 0) ? FFTLEN-1 : i - 1;
+				prev = (curr == 0) ? FFTLEN-1 : curr - 1;
+				
+				if(i != 0 && i != FFTLEN-1)
+					
+						outframe_cmplx[curr] =  (nmb[i]/cabs(inframe_cmplx[i]) > thresh) ? cmin(outframe_cmplx[prev], outframe_cmplx[next])) : outframe_cmplx[curr];
+			}
 		}
+		
+		/*
+		// Increment hist_index with bounds check
+		if (opt8)
+		{
+			hist_index = (hist_index == 2) ? 0 : hist_index + 1;
+			
+			//Getting index values for next/prev outputs and bounds checking
+			next = hist_index;
+			curr = (hist_index == 0) ? 2 : hist_index - 1;
+			prev = (curr == 0) ? 2 : curr - 1;
+		}*/
 		
 		ifft(FFTLEN, outframe_cmplx);
 		
-		
-		for(i= 0; i < FFTLEN; i++)
+		for(i = 0; i < FFTLEN; i++)
 			outframe[i] = outframe_cmplx[i].r;
+		
 	}
 	else
 	{
@@ -514,6 +552,12 @@ void ISR_AIC(void)
 }
 
 /************************************************************************************/
+
+complex cmin(complex x, complex y)
+{
+	return (cabs(x) <= cabs(y)) ? x : y;
+}
+
 
 float min(float x, float y)
 {
