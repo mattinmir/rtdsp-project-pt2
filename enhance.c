@@ -98,27 +98,37 @@ float cpufrac; 						/* Fraction of CPU time used */
 volatile int io_ptr=0;              /* Input/ouput pointer for circular buffers */ // index to each sample, not quarter frame
 volatile int frame_ptr=0;           /* Frame pointer */ // index to quarter frame
 
+// Post-fft input
 complex inframe_cmplx[FFTLEN];
+// Pre-ifft output
 complex outframe_cmplx[FFTLEN];
 
+// Noise Minimum Buffer Candidates
 float *m1;
 float *m2;
 float *m3;
 float *m4;
+
+// Noise Minimum Buffer
 float *nmb;
-int cands_index = 0 ;
+
+// Counter to check when to rotate buffers 
 int quarter_frames_processed = 0;
 
+// Noise Floor
 volatile float lambda = 0.06;
+// Noise Estimate Coefficient
 volatile float alpha = 2.5;
+// Time constant for low pass filter
 volatile float tau = 0.06;
 
-// used for lpf
+// Low Pass Filter Coefficient 
 float q;
 
-
+// Controls Noise Subtraction
 int noise_subtraction = 1;
-// Optimisation Switches
+
+// Suggested Optimisation Switches
 int opt1 = 1; // LPF of X when calculating noise estimate
 int opt2 = 1; // Modify opt1 do do calculation in power domain
 int opt3 = 1; // LPF when calculating nmb value
@@ -130,38 +140,58 @@ int opt4 = 4; 	/*
 					case 4: Requires opt1
 				*/
 int opt5 = 0;
-int opt6 = 0;
+int opt6 = 1;
 int opt7 = 0;
+int opt8 = 0;
 
+// Self-suggested optimisations
 int opta = 0;
 
-
+// Iterator used in various for loops
 int i;
+
+// Stores absolute value of input
 float magx;
+
+// Arrays used in calculating low pass filters
 float P[NMB_SIZE];
 float P_prev[NMB_SIZE];
 float nmb_prev[NMB_SIZE];
+
+// Filter coefficient
 float g;
 
-// For opt5
+/* For opt5*/
+// For holding power domain values
 float magxsq;
 float nmbisq;
 float Pisq;
+// Used to scale alpha
 float alpha_coef = 1;
 
 
+/* For opt 8*/
+// Holds previous, current, and next inputs
+complex outframe_hist[3][FFTLEN] = {0};
+// Index of the current input
+int hist_index = 0;
+int next, prev, curr;
+// Perform optimisation when n/x is over this threshold
+float thresh = 0.5;
+unsigned int musical_noise[FFTLEN] = {0};
+
  /******************************* Function prototypes *******************************/
-void init_hardware(void);    	/* Initialize codec */ 
-void init_HWI(void);            /* Initialize hardware interrupts */
-void ISR_AIC(void);             /* Interrupt service routine for codec */
-void process_frame(void);       /* Frame processing routine */
-float min(float x, float y);
-float max(float x, float y);
-float lpf(float x, float lpf_prev[], int i);
+void init_hardware(void);    					/* Initialize codec */ 
+void init_HWI(void);         				 	/* Initialize hardware interrupts */
+void ISR_AIC(void);             				/* Interrupt service routine for codec */
+void process_frame(void);       				/* Frame processing routine */
+float min(float x, float y);					/* min of 2 real floats */ 
+float max(float x, float y);					/* max of 2 real floats */
+float lpf(float x, float lpf_prev[], int i);	/* lpf of array of samples */
+complex cmin(complex x, complex y);				/* min of 2 complex values */
 /********************************** Main routine ************************************/
 void main()
 {      
-
   	int k; // used in various for loops
   
 /*  Initialize and zero fill arrays */  
@@ -172,11 +202,11 @@ void main()
     outframe	= (float *) calloc(FFTLEN, sizeof(float));	/* Array for processing*/
     inwin		= (float *) calloc(FFTLEN, sizeof(float));	/* Input window */
     outwin		= (float *) calloc(FFTLEN, sizeof(float));	/* Output window */
-    m1			= (float *) calloc(NMB_SIZE, sizeof(float));
-	m2			= (float *) calloc(NMB_SIZE, sizeof(float));
-	m3			= (float *) calloc(NMB_SIZE, sizeof(float));
-	m4			= (float *) calloc(NMB_SIZE, sizeof(float));
-	nmb 		= (float *) calloc(NMB_SIZE, sizeof(float));
+    m1			= (float *) calloc(NMB_SIZE, sizeof(float)); // nmb candidate 1
+	m2			= (float *) calloc(NMB_SIZE, sizeof(float)); // nmb candidate 2
+	m3			= (float *) calloc(NMB_SIZE, sizeof(float)); // nmb candidate 3
+	m4			= (float *) calloc(NMB_SIZE, sizeof(float)); // nmb candidate 4
+	nmb 		= (float *) calloc(NMB_SIZE, sizeof(float)); // Noise Minimum Buffer
 	
 	/* initialize board and the audio port */
   	init_hardware();
@@ -243,11 +273,9 @@ void init_HWI(void)
 /******************************** process_frame() ***********************************/  
 void process_frame(void)
 {
-	int k, m, new_cands_index; 
+	int k, m; 
 	int io_ptr0;   // index of samples
-	float nmb_value, inframe_value;
 	
-
 	float* temp;
 
 	/* work out fraction of available CPU time used by algorithm */    
@@ -277,35 +305,14 @@ void process_frame(void)
 	} 
 	
 /******************************** DO PROCESSING OF FRAME  HERE *******************************************************************/
-	
-		
+	if(noise_subtraction)
+	{
 		if(quarter_frames_processed == QUARTER_FRAMES_PER_CAND) 
 		{		
 			quarter_frames_processed = 0;
 
-			/********** Updating nmb from candidates ***********/
 			
-			// Find min value for each frequency bin from each candidate
-			
-			// When OVERSAMP = 4
-			for (i = 0; i < NMB_SIZE; i++)
-			{				
-				nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
-				
-				
-
-					
-			
-				if(opt3)
-				{
-					nmb[i] = lpf(nmb[i], nmb_prev, i);
-					nmb_prev[i] = nmb[i];
-				}
-				
-				
-			}
-			
-			/************ Rotate buffer pointers around  ***************/
+		/************ Rotate candidate pointers around  ***************/
 			// m1 newest, m2 oldest
 			temp = m1;
 			m1 = m2;
@@ -313,90 +320,200 @@ void process_frame(void)
 			m3 = m4;
 			m4 = temp;
 			
+			// Re-initialise m1 with large values so that minimum magnitude values are fresh
 			for(k = 0; k < NMB_SIZE; k++)
 				m1[k] = FLT_MAX;
-
-
 		}
 		
 		/***************** Applying fft ****************/ 
+		
+		// fft() takes a complex array as argument so create new array of complex structs
+		// with input as the real part and 0 imaginary part
 		for(i = 0; i < FFTLEN; i++)
 			inframe_cmplx[i] = cmplx(inframe[i],0);
 			
-		fft (FFTLEN, inframe_cmplx);
+		fft(FFTLEN, inframe_cmplx);
 
 		
-			
 		/************ Updating nmb candidates ***********/
 		for(i = 0; i < NMB_SIZE; i++)	
 		{	
 			// Calculate magnitude of input
 			magx = cabs(inframe_cmplx[i]);
-				
 			
+			// Low pass filter the input
+			if(opt1)
+			{
 				// Square magx to put in power domain
-			magx *= magx;
+				if(opt2)
+					magx *= magx;
 				
 				// Perform low pass filter	
-			P[i] =(1-q)*magx + q*P_prev[i];// lpf(magx, P_prev, i);
+				P[i] = lpf(magx, P_prev, i); 
 				
-					// Store value for next lpf equation
-			P_prev[i] = P[i];
+				// Store value for next lpf equation
+				P_prev[i] = P[i];
 				
 				// sqrt to bring back to time domain
-									
-			P[i] = sqrt(P[i]);
-				
+				if(opt2)					
+					P[i] = sqrt(P[i]);
+			}
+			else
+				P[i] = magx;
 			
-		
-				
+			// Update candiate with the minimum of its current value and the input	
 			m1[i] = min(P[i], m1[i]);
 		}
 		
 		/********** Updating nmb from candidates ***********/
-		
-		// Find min value for each frequency bin from each candidate
-		
-		// When OVERSAMP = 4
-		for (i = 0; i < NMB_SIZE; i++)
-		{				
-			nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
 			
-			// Scale alpha inversely proportional to SNR
-			if (i < 20)
-			{
-				nmbisq = min(FLT_MAX, nmb[i]*nmb[i]); // Prevent overflow
-				magxsq = min(FLT_MAX, cabs(inframe_cmplx[i]) * cabs(inframe_cmplx[i]));
-				// Don't want to amplify more than 20
-				alpha_coef = min(200, -log(1-(nmbisq/magxsq))/(nmbisq/magxsq)); // +1 to make 1SNR stay same (could make it decrease alpha if high snr?)
-				nmb[i] = min(FLT_MAX, nmb[i]*alpha_coef);
-			}	
+			// Find min value for each frequency bin from each candidate
+			
+			// Assuming OVERSAMP = 4
+			for (i = 0; i < NMB_SIZE; i++)
+			{				
+				// Update nmb from candidates
+				nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
 				
+				// Attempt to attenuate all frequencies outside of human vocal range
+				if(opta)
+				{
+					if(i >= 5 && i <= 57) // Bwetween 300 and 3500Hz
+						nmb[i] /= 10000;
+					else
+						nmb[i] = FLT_MAX;
+				}
+				
+				// Scale alpha inversely proportional to SNR
+				if (opt6 && i < 20)
+				{
+					// Square to put in power domain
+					// Use min function to prevent overflow
+					nmbisq = min(FLT_MAX, nmb[i]*nmb[i]); 
+					magxsq = min(FLT_MAX, cabs(inframe_cmplx[i]) * cabs(inframe_cmplx[i]));
+					
+				
+					// -log increases with decreasing SNR
+					// Cap at 200 as the function diverges to infinity
+					// SNR calculated using the assumption that 1-(noise/input) = signal/input 
+					// Therefore s/n = (s/x)/(n/x) = (1-(n/x))/(n/x)
+					alpha_coef = min(200, -log((1-(nmbisq/magxsq))/(nmbisq/magxsq))); 
+					
+					// Multiply by scaling factor and also prevent overflow
+					nmb[i] = min(FLT_MAX, nmb[i]*alpha_coef);
+				}	
+					
+				// Low pass filter the nmb using the previous value at that freq bin
+				if(opt3)
+				{
+					nmb[i] = lpf(nmb[i], nmb_prev, i);
+					nmb_prev[i] = nmb[i];
+				}
+			}
 		
-				nmb[i] = lpf(nmb[i], nmb_prev, i);
-				nmb_prev[i] = nmb[i];
-			
-		}
-		
+		// Increment counter, rotate candidates at QUARTER_FRAMES_PER_CAND count
 		quarter_frames_processed++;		
 		
 		/********** Applying noise subtraction ***************/
 		for (i = 0; i < FFTLEN; i++)
 		{
+			// Calculating square values for use in opt5, which overlfow check
+			if(opt5)
+			{
+				magx = min(FLT_MAX, cabs(inframe_cmplx[i]));
+				magxsq = min(FLT_MAX, magx*magx);
+				nmbisq = min(FLT_MAX, nmb[i]*nmb[i]);
+				Pisq = min(FLT_MAX, P[i]*P[i]);
+			}
 			
-			// Different values for g
+			// Different ways of calculating g (filter coefficient)
+			switch(opt4)
+			{
+				case 0:
+					// Calculate g in power domain
+					if (opt5)
+						g = max(lambda, sqrt(1-(nmbisq/magxsq)));
+					else
+						g = max(lambda, 1-(nmb[i]/magx));
+					break;
+				case 1:
+					// Calculate g in power domain
+					if(opt5)
+						g = max(lambda*sqrt(nmbisq/magxsq), sqrt(1-(nmbisq/magxsq)));
+					else 
+						g = max(lambda*nmb[i]/magx, 1-(nmb[i]/magx));
+					break;
+				case 2:
+					// Calculate g in power domain
+					if(opt5)
+						g = max(lambda*sqrt(Pisq/magxsq), sqrt(1-(nmbisq/magxsq)));
+					else
+						g = max(lambda*P[i]/magx, 1-(nmb[i]/magx));
+					break;
+				case 3: 
+					// Calculate g in power domain
+					if(opt5)
+						g = max(lambda*sqrt(nmbisq/Pisq), sqrt(1-(nmbisq/Pisq)));
+					else	
+						g = max(lambda*nmb[i]/P[i], 1-(nmb[i]/P[i]));
+					break;
+				case 4:
+					// Calculate g in power domain
+					if(opt5)
+						g = max(lambda, sqrt(1-(nmbisq/Pisq)));
+					else	
+						g = max(lambda, 1-(nmb[i]/P[i]));
+					break;
+			}
+			
+			// If there is muscial noise, replace that bin with the minimum of its neighbours
+			// Delays output by a frame as wee need future data
+			if(opt8)
+			{
+				// Enter this frame's data into the history
+				outframe_hist[hist_index][i] = rmul(g, inframe_cmplx[i]);
 				
-			g = max(lambda, 1-(nmb[i]/P[i]));
-
-			outframe_cmplx[i] = rmul(g, inframe_cmplx[i]);
+				// If flag was set in previous cycle apply optimisation, else don't		
+				if(musical_noise[i])
+					outframe_cmplx[i] = cmin(outframe_hist[curr][i], cmin(outframe_hist[prev][i],outframe_hist[next][i]));
+				else
+					 outframe_cmplx[i] = outframe_hist[curr][i];
+	
+				// Sets flag for next cycle
+				musical_noise[i] = (nmb[i]/cabs(inframe_cmplx[i]) > thresh);
+			}
+			
+			// Apply filter to input to produce output
+			else
+				outframe_cmplx[i] = rmul(g, inframe_cmplx[i]);
+		}
+		
+		// Increment hist_index with bounds check
+		if (opt8)
+		{
+			hist_index = (hist_index == 2) ? 0 : hist_index + 1;
+			
+			//Getting index values for next/prev outputs and bounds checking
+			next = hist_index;
+			curr = (hist_index == 0) ? 2 : hist_index - 1;
+			prev = (curr == 0) ? 2 : curr - 1;
 		}
 		
 		ifft(FFTLEN, outframe_cmplx);
 		
-		
+		// Ouput of ifft is still a complex array, so need to conver to a float array
 		for(i= 0; i < FFTLEN; i++)
 			outframe[i] = outframe_cmplx[i].r;
-
+	}
+	
+	// For testing effect of noise subtraction 
+	else
+	{
+		for (k=0;k<FFTLEN;k++)
+		{                           
+			outframe[k] = inframe[k];/* copy input straight into output */ 
+		} 
+	}
 	/******************************************************************************************************************************/
 	
     /* multiply outframe by output window and overlap-add into output buffer */   
@@ -434,6 +551,11 @@ void ISR_AIC(void)
 }
 
 /************************************************************************************/
+
+complex cmin(complex x, complex y)
+{
+	return (cabs(x) <= cabs(y)) ? x : y;
+}
 
 float min(float x, float y)
 {
