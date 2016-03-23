@@ -66,7 +66,6 @@
 #define QUARTER_FRAMES_PER_CAND 312//(int)(10.0/(float)TFRAME) // Not sure if cast to int is correct, will lose info -> significant? 
 #define NMB_SIZE FFTLEN
 
-
 /******************************* Global declarations ********************************/
 
 /* Audio port configuration settings: these values set registers in the AIC23 audio 
@@ -120,20 +119,21 @@ float q;
 
 int noise_subtraction = 1;
 // Optimisation Switches
-unsigned int opt1 = 1; // LPF of X when calculating noise estimate
-unsigned int opt2 = 1; // Modify opt1 do do calculation in power domain
-unsigned int opt3 = 1; // LPF when calculating nmb value
-unsigned int opt4 = 4; 	/*
+int opt1 = 1; // LPF of X when calculating noise estimate
+int opt2 = 1; // Modify opt1 do do calculation in power domain
+int opt3 = 1; // LPF when calculating nmb value
+int opt4 = 4; 	/*
 					case 0:
 					case 1:
 					case 2: Requires opt1
 					case 3: Requires opt1
 					case 4: Requires opt1
 				*/
-unsigned int opt5 = 0;
-unsigned int opt6 = 1;
-unsigned int opt7 = 0;
-unsigned int opt8 = 0;
+int opt5 = 0;
+int opt6 = 0;
+int opt7 = 0;
+
+int opta = 0;
 
 
 int i;
@@ -149,12 +149,7 @@ float nmbisq;
 float Pisq;
 float alpha_coef = 1;
 
-// For opt 8
-complex outframe_hist[3][FFTLEN] = {0};
-int hist_index = 0;
-int next, prev, curr;
-float thresh = 0.5;
-unsigned int musical_noise[FFTLEN] = {0};
+
  /******************************* Function prototypes *******************************/
 void init_hardware(void);    	/* Initialize codec */ 
 void init_HWI(void);            /* Initialize hardware interrupts */
@@ -163,7 +158,6 @@ void process_frame(void);       /* Frame processing routine */
 float min(float x, float y);
 float max(float x, float y);
 float lpf(float x, float lpf_prev[], int i);
-complex cmin(complex x, complex y);
 /********************************** Main routine ************************************/
 void main()
 {      
@@ -284,8 +278,6 @@ void process_frame(void)
 	
 /******************************** DO PROCESSING OF FRAME  HERE *******************************************************************/
 	
-	if(noise_subtraction)
-	{
 		
 		if(quarter_frames_processed == QUARTER_FRAMES_PER_CAND) 
 		{		
@@ -301,15 +293,7 @@ void process_frame(void)
 				nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
 				
 				
-				// Scale alpha inversely proportional to SNR
-				if (opt6 && i < 10)
-				{
-					nmbisq = min(FLT_MAX, nmb[i]*nmb[i]); // Prevent overflow
-					magxsq = min(FLT_MAX, cabs(inframe_cmplx[i]) * cabs(inframe_cmplx[i]));
-					// Don't want to amplify more than 20
-					alpha_coef = min(200, -log((1-(nmbisq/magxsq))/(nmbisq/magxsq))); // +1 to make 1SNR stay same (could make it decrease alpha if high snr?)
-					nmb[i] = min(FLT_MAX, nmb[i]*alpha_coef);
-				}	
+
 					
 			
 				if(opt3)
@@ -349,26 +333,22 @@ void process_frame(void)
 			// Calculate magnitude of input
 			magx = cabs(inframe_cmplx[i]);
 				
-			if(opt1)
-			{
+			
 				// Square magx to put in power domain
-				if(opt2)
-					magx *= magx;
+			magx *= magx;
 				
 				// Perform low pass filter	
-				P[i] =(1-q)*magx + q*P_prev[i];// lpf(magx, P_prev, i);
+			P[i] =(1-q)*magx + q*P_prev[i];// lpf(magx, P_prev, i);
 				
 					// Store value for next lpf equation
-				P_prev[i] = P[i];
+			P_prev[i] = P[i];
 				
 				// sqrt to bring back to time domain
-				if(opt2)					
-					P[i] = sqrt(P[i]);
+									
+			P[i] = sqrt(P[i]);
 				
 			
-			}
-			else
-				P[i] = magx;
+		
 				
 			m1[i] = min(P[i], m1[i]);
 		}
@@ -382,16 +362,8 @@ void process_frame(void)
 		{				
 			nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
 			
-			if(0)
-			{
-				if(i >= 5 && i <= 57) // Bwetween 300 and 3500Hz
-					nmb[i] /= 10000;
-				else
-					nmb[i] = FLT_MAX;
-			}
-			
 			// Scale alpha inversely proportional to SNR
-			if (opt6 && i < 20)
+			if (i < 20)
 			{
 				nmbisq = min(FLT_MAX, nmb[i]*nmb[i]); // Prevent overflow
 				magxsq = min(FLT_MAX, cabs(inframe_cmplx[i]) * cabs(inframe_cmplx[i]));
@@ -401,12 +373,8 @@ void process_frame(void)
 			}	
 				
 		
-			if(opt3)
-			{
 				nmb[i] = lpf(nmb[i], nmb_prev, i);
 				nmb_prev[i] = nmb[i];
-			}
-			
 			
 		}
 		
@@ -415,106 +383,20 @@ void process_frame(void)
 		/********** Applying noise subtraction ***************/
 		for (i = 0; i < FFTLEN; i++)
 		{
-			magx = cabs(inframe_cmplx[i]);
-			magxsq = magx*magx;
-			nmbisq = nmb[i]*nmb[i];
-			Pisq = P[i]*P[i];
 			
 			// Different values for g
-			switch(opt4)
-			{
-				case 0:
-					// Calculate g in power domain
-					if (opt5)
-						g = max(lambda, sqrt(1-(nmbisq/magxsq)));
-					else
-						g = max(lambda, 1-(nmb[i]/magx));
-					break;
-				case 1:
-					// Calculate g in power domain
-					if(opt5)
-						g = max(lambda*sqrt(nmbisq/magxsq), sqrt(1-(nmbisq/magxsq)));
-					else 
-						g = max(lambda*nmb[i]/magx, 1-(nmb[i]/magx));
-					break;
-				case 2:
-					// Calculate g in power domain
-					if(opt5)
-						g = max(lambda*sqrt(Pisq/magxsq), sqrt(1-(nmbisq/magxsq)));
-					else
-						g = max(lambda*P[i]/magx, 1-(nmb[i]/magx));
-					break;
-				case 3: 
-					// Calculate g in power domain
-					if(opt5)
-						g = max(lambda*sqrt(nmbisq/Pisq), sqrt(1-(nmbisq/Pisq)));
-					else	
-						g = max(lambda*nmb[i]/P[i], 1-(nmb[i]/P[i]));
-					break;
-				case 4:
-					// Calculate g in power domain
-					if(opt5)
-						g = max(lambda, sqrt(1-(nmbisq/Pisq)));
-					else	
-						g = max(lambda, 1-(nmb[i]/P[i]));
-					break;
-			}
-			
-			/*
-			// Processing the last cycle's frame so we can use this cycle's frame as last frame's future
-			if(opt8)
-			{
-				outframe_hist[hist_index][i] = rmul(g, inframe_cmplx[i]);
 				
-				
-				// If flag was set in previous cycle apply optimisation, else don't					
-				outframe_cmplx[i] = (musical_noise[i]) ? \
-					cmin(outframe_hist[curr][i], cmin(outframe_hist[prev][i],outframe_hist[next][i])) : outframe_hist[curr][i];
-				
-				
-				
-				// Sets flag for next cycle
-				musical_noise[i] = (nmb[i]/cabs(inframe_cmplx[i]) > thresh);
-			}
-			else*/
+			g = max(lambda, 1-(nmb[i]/P[i]));
+
 			outframe_cmplx[i] = rmul(g, inframe_cmplx[i]);
-			if(opt8)
-			{
-				next = i;
-				curr = (i == 0) ? FFTLEN-1 : i - 1;
-				prev = (curr == 0) ? FFTLEN-1 : curr - 1;
-				
-				if(i != 0 && i != FFTLEN-1)
-					
-						outframe_cmplx[curr] =  (nmb[i]/cabs(inframe_cmplx[i]) > thresh) ? cmin(outframe_cmplx[prev], outframe_cmplx[next])) : outframe_cmplx[curr];
-			}
 		}
-		
-		/*
-		// Increment hist_index with bounds check
-		if (opt8)
-		{
-			hist_index = (hist_index == 2) ? 0 : hist_index + 1;
-			
-			//Getting index values for next/prev outputs and bounds checking
-			next = hist_index;
-			curr = (hist_index == 0) ? 2 : hist_index - 1;
-			prev = (curr == 0) ? 2 : curr - 1;
-		}*/
 		
 		ifft(FFTLEN, outframe_cmplx);
 		
-		for(i = 0; i < FFTLEN; i++)
-			outframe[i] = outframe_cmplx[i].r;
 		
-	}
-	else
-	{
-		for (k=0;k<FFTLEN;k++)
-		{                           
-			outframe[k] = inframe[k];/* copy input straight into output */ 
-		} 
-	}
+		for(i= 0; i < FFTLEN; i++)
+			outframe[i] = outframe_cmplx[i].r;
+
 	/******************************************************************************************************************************/
 	
     /* multiply outframe by output window and overlap-add into output buffer */   
@@ -552,12 +434,6 @@ void ISR_AIC(void)
 }
 
 /************************************************************************************/
-
-complex cmin(complex x, complex y)
-{
-	return (cabs(x) <= cabs(y)) ? x : y;
-}
-
 
 float min(float x, float y)
 {
