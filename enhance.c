@@ -63,7 +63,7 @@
 /* Number of frames that are compared per nmb candidate
  * (10 seconds/frame time)/number of nmb candidates
  */
-#define QUARTER_FRAMES_PER_CAND 312//(int)(10.0/(float)TFRAME) // Not sure if cast to int is correct, will lose info -> significant? 
+#define QUARTER_FRAMES_PER_CAND 312
 #define NMB_SIZE FFTLEN
 
 /******************************* Global declarations ********************************/
@@ -141,11 +141,8 @@ int opt4 = 4; 	/*
 				*/
 int opt5 = 0;
 int opt6 = 1;
-int opt7 = 0;
-int opt8 = 0;
 
-// Self-suggested optimisations
-int opta = 0;
+int opt8 = 0;
 
 // Iterator used in various for loops
 int i;
@@ -161,25 +158,21 @@ float nmb_prev[NMB_SIZE];
 // Filter coefficient
 float g;
 
-/* For opt5*/
+/* For opt 5 */
 // For holding power domain values
 float magxsq;
 float nmbisq;
 float Pisq;
-// Used to scale alpha
-float alpha_coef = 1;
 
-
+/* For opt 6 */
 float snr = 1;
+float alpha_coef = 1; // Used to scale alpha
 
 /* For opt 8*/
-// Holds previous, current, and next inputs
-complex outframe_hist[3][FFTLEN] = {0};
-// Index of the current input
-int hist_index = 0;
+complex outframe_hist[3][FFTLEN] = {0}; // Holds previous, current, and next inputs
+int hist_index = 0; // Index of the current input
 int next, prev, curr;
-// Perform optimisation when n/x is over this threshold
-float thresh = 0.5;
+float thresh = 0.5; // Perform optimisation when n/x is over this threshold
 unsigned int musical_noise[FFTLEN] = {0};
 
  /******************************* Function prototypes *******************************/
@@ -377,21 +370,12 @@ void process_frame(void)
 				// Update nmb from candidates
 				nmb[i] = alpha * min(min(m1[i], m2[i]), min(m3[i], m4[i]));
 				
-				// Attempt to attenuate all frequencies outside of human vocal range
-				if(opta)
-				{
-					if(i >= 5 && i <= 57) // Bwetween 300 and 3500Hz
-						nmb[i] /= 10000;
-					else
-						nmb[i] = FLT_MAX;
-				}
-				
-					// Scale alpha inversely proportional to SNR
+				// Scale alpha inversely proportional to SNR
 				if (opt6 && i < 20)
 				{
 					// x = y + n
 					// x/n = y/n + 1
-					// y^2/n^2 = (x/n - 1)^2
+					// y^2/n^2 = (x/n - 1)^2 = snr
 					magx = cabs(inframe_cmplx[i]);
 					snr = (magx/nmb[i] - 1) * (magx/nmb[i] - 1);
 				
@@ -402,7 +386,8 @@ void process_frame(void)
 					// Multiply by scaling factor and also prevent overflow
 					nmb[i] = min(FLT_MAX, nmb[i]*alpha_coef);
 				}	
-					// Low pass filter the nmb using the previous value at that freq bin
+				
+				// Low pass filter the nmb using the previous value at that freq bin
 				if(opt3)
 				{
 					nmb[i] = lpf(nmb[i], nmb_prev, i);
@@ -416,7 +401,7 @@ void process_frame(void)
 		/********** Applying noise subtraction ***************/
 		for (i = 0; i < FFTLEN; i++)
 		{
-			// Calculating square values for use in opt5, which overlfow check
+			// Calculating square values for use in opt5, with overflow check
 			if(opt5)
 			{
 				magx = min(FLT_MAX, cabs(inframe_cmplx[i]));
@@ -425,7 +410,7 @@ void process_frame(void)
 				Pisq = min(FLT_MAX, P[i]*P[i]);
 			}
 			
-			// Different ways of calculating g (filter coefficient)
+			// Different ways of calculating g (gain factor)
 			switch(opt4)
 			{
 				case 0:
@@ -476,7 +461,7 @@ void process_frame(void)
 				if(musical_noise[i])
 					outframe_cmplx[i] = cmin(outframe_hist[curr][i], cmin(outframe_hist[prev][i],outframe_hist[next][i]));
 				else
-					 outframe_cmplx[i] = outframe_hist[curr][i];
+					outframe_cmplx[i] = outframe_hist[curr][i];
 	
 				// Sets flag for next cycle
 				musical_noise[i] = (nmb[i]/cabs(inframe_cmplx[i]) > thresh);
@@ -505,7 +490,7 @@ void process_frame(void)
 			outframe[i] = outframe_cmplx[i].r;
 	}
 	
-	// For testing effect of noise subtraction 
+	// Allpass
 	else
 	{
 		for (k=0;k<FFTLEN;k++)
@@ -551,21 +536,25 @@ void ISR_AIC(void)
 
 /************************************************************************************/
 
+// Min of magnitude of two complex numbers
 complex cmin(complex x, complex y)
 {
 	return (cabs(x) <= cabs(y)) ? x : y;
 }
 
+// Min of two floats
 float min(float x, float y)
 {
 	return (x <= y) ? x : y;
 }
 
+// Max of two floats
 float max(float x, float y)
 {
 	return (x >= y) ? x : y;
 }
 
+// Low Pass Filter
 float lpf(float x, float lpf_prev[], int i)
 {
 	return (1-q)*x + q*lpf_prev[i];
