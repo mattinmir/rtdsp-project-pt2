@@ -170,6 +170,8 @@ float Pisq;
 float alpha_coef = 1;
 
 
+float snr = 1;
+
 /* For opt 8*/
 // Holds previous, current, and next inputs
 complex outframe_hist[3][FFTLEN] = {0};
@@ -384,26 +386,23 @@ void process_frame(void)
 						nmb[i] = FLT_MAX;
 				}
 				
-				// Scale alpha inversely proportional to SNR
+					// Scale alpha inversely proportional to SNR
 				if (opt6 && i < 20)
 				{
-					// Square to put in power domain
-					// Use min function to prevent overflow
-					nmbisq = min(FLT_MAX, nmb[i]*nmb[i]); 
-					magxsq = min(FLT_MAX, cabs(inframe_cmplx[i]) * cabs(inframe_cmplx[i]));
-					
+					// x = y + n
+					// x/n = y/n + 1
+					// y^2/n^2 = (x/n - 1)^2
+					magx = cabs(inframe_cmplx[i]);
+					snr = (magx/nmb[i] - 1) * (magx/nmb[i] - 1);
 				
 					// -log increases with decreasing SNR
-					// Cap at 200 as the function diverges to infinity
-					// SNR calculated using the assumption that 1-(noise/input) = signal/input 
-					// Therefore s/n = (s/x)/(n/x) = (1-(n/x))/(n/x)
-					alpha_coef = min(200, -log((1-(nmbisq/magxsq))/(nmbisq/magxsq))); 
+					// Cap at FLT_MAX as the function diverges to infinity
+					alpha_coef = min(FLT_MAX, -log(snr)); 
 					
 					// Multiply by scaling factor and also prevent overflow
 					nmb[i] = min(FLT_MAX, nmb[i]*alpha_coef);
 				}	
-					
-				// Low pass filter the nmb using the previous value at that freq bin
+					// Low pass filter the nmb using the previous value at that freq bin
 				if(opt3)
 				{
 					nmb[i] = lpf(nmb[i], nmb_prev, i);
